@@ -1,6 +1,6 @@
 import { limitDays, toDailyForecast } from "../../../lib/forecast.js";
 import { ApiError, CACHE_VOLATILE, json, route } from "../../../lib/http.js";
-import { resolveLocation, resolveTimezone } from "../../../lib/location.js";
+import { resolveLocation, resolveTimezone, toLocalNaive } from "../../../lib/location.js";
 import { fetchForecast } from "../../../lib/providers/nws.js";
 
 const DEFAULT_DAYS = 7;
@@ -26,7 +26,15 @@ export default route(async (request, client) => {
 
   const timezone = await resolveTimezone(location, client);
   const forecast = await fetchForecast(location.lat, location.lon, client);
-  const daily = limitDays(toDailyForecast(forecast.precipitation, forecast.probability, timezone), days);
+
+  // "Today" at the site, not at the server — a forecast starting yesterday is
+  // not a forecast.
+  const today = toLocalNaive(new Date().toISOString(), timezone).slice(0, 10);
+  const daily = limitDays(
+    toDailyForecast(forecast.precipitation, forecast.probability, timezone),
+    days,
+    today,
+  );
 
   return json(
     {

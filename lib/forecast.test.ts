@@ -95,4 +95,21 @@ describe("limitDays", () => {
   it("never returns an empty list for a nonsense count", () => {
     expect(limitDays(week, 0)).toHaveLength(1);
   });
+
+  it("drops days before the start date", () => {
+    // The NWS series opens before the current hour, so its first bucket is
+    // usually yesterday in local time.
+    const result = limitDays(week, 7, "2026-08-03");
+    expect(result[0]?.date).toBe("2026-08-03");
+    expect(result).toHaveLength(5);
+  });
+
+  it("still returns the requested count when earlier days are dropped", () => {
+    expect(limitDays(week, 3, "2026-08-02")).toHaveLength(3);
+    expect(limitDays(week, 3, "2026-08-02")[0]?.date).toBe("2026-08-02");
+  });
+
+  it("is unchanged when no start date is given", () => {
+    expect(limitDays(week, 7)).toHaveLength(7);
+  });
 });

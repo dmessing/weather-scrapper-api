@@ -1,4 +1,5 @@
 import { ApiError } from "../http.js";
+import { haversineMiles } from "../stations.js";
 import { callUpstream } from "../upstream.js";
 import type { DailyObservation } from "./cdo.js";
 
@@ -17,12 +18,19 @@ import type { DailyObservation } from "./cdo.js";
 
 const MULTI_STN_URL = "https://data.rcc-acis.org/MultiStnData";
 const MM_PER_INCH = 25.4;
-/** Roughly 0.25° ≈ 17 miles, comparable to the CDO station search radius. */
+/** Roughly 0.25° ≈ 17 miles — the search box, deliberately wider than the keep radius. */
 const BBOX_DEGREES = 0.25;
+/** Matches the CDO fallback's radius so both paths answer the same question. */
+const KEEP_RADIUS_MI = 15;
+/** Matches MAX_STATIONS in stations.ts. */
+const KEEP_STATIONS = 5;
 
 interface AcisResponse {
   error?: string;
-  data?: { meta?: { sids?: string[]; name?: string }; data?: string[][] }[];
+  data?: {
+    meta?: { sids?: string[]; name?: string; ll?: [number, number] };
+    data?: string[][];
+  }[];
 }
 
 /**
@@ -46,13 +54,45 @@ function stationId(sids: string[] | undefined): string {
   return `ACIS:${first ?? "unknown"}`;
 }
 
+/**
+ * Keeps only the stations nearest the centroid.
+ *
+ * A bbox search returns everything in a ~17-mile square, and averaging all of it
+ * answers a different question than CDO's ZIP lookup does — measured live, the
+ * full-box mean ran 80% above the ZIP's own gauge on the same day. Narrowing to
+ * the same radius and station count as the CDO fallback keeps the two paths
+ * comparable, which matters when the number settles a contract.
+ *
+ * Stations without coordinates are dropped rather than assumed nearby.
+ */
+export function nearestStations<T extends { meta?: { ll?: [number, number] } }>(
+  stations: T[],
+  centroid: { lat: number; lon: number },
+): T[] {
+  return stations
+    .flatMap((station) => {
+      const ll = station.meta?.ll;
+      if (!ll || ll.length !== 2) return [];
+      const [lon, lat] = ll; // ACIS reports [lon, lat].
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return [];
+
+      const distance = haversineMiles(centroid, { lat, lon });
+      return distance <= KEEP_RADIUS_MI ? [{ station, distance }] : [];
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, KEEP_STATIONS)
+    .map((entry) => entry.station);
+}
+
 export function normalizeAcis(
   body: AcisResponse,
   days: string[],
+  centroid?: { lat: number; lon: number },
 ): DailyObservation[] {
   const observations: DailyObservation[] = [];
+  const stations = centroid ? nearestStations(body.data ?? [], centroid) : (body.data ?? []);
 
-  for (const station of body.data ?? []) {
+  for (const station of stations) {
     const id = stationId(station.meta?.sids);
     // Rows are aligned to the requested date range, one entry per day.
     for (const [index, day] of days.entries()) {
@@ -94,7 +134,7 @@ export async function fetchDailyByBbox(
         sdate: start,
         edate: end,
         elems: [{ name: "pcpn", interval: "dly" }],
-        meta: ["name", "sids"],
+        meta: ["name", "sids", "ll"],
       }),
     }),
   );
@@ -108,5 +148,5 @@ export async function fetchDailyByBbox(
     throw new ApiError(502, "acis_error", body.error);
   }
 
-  return normalizeAcis(body, days);
+  return normalizeAcis(body, days, centroid);
 }

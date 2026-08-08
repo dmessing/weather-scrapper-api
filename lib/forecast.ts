@@ -49,7 +49,18 @@ export function toDailyForecast(
   }));
 }
 
-/** Trims a daily forecast to the first `days` calendar days it covers. */
-export function limitDays(forecast: ForecastDay[], days: number): ForecastDay[] {
-  return forecast.slice(0, Math.max(1, days));
+/**
+ * Trims a daily forecast to `days` calendar days starting at `fromDate`.
+ *
+ * The NWS gridpoint series opens before the current hour, so its first bucket is
+ * usually yesterday in local time. Slicing without dropping those would spend
+ * part of a "7 day forecast" on days that have already happened.
+ */
+export function limitDays(
+  forecast: ForecastDay[],
+  days: number,
+  fromDate?: string,
+): ForecastDay[] {
+  const future = fromDate ? forecast.filter((day) => day.date >= fromDate) : forecast;
+  return future.slice(0, Math.max(1, days));
 }
