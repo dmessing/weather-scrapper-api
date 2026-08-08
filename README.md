@@ -16,8 +16,8 @@ Three providers sit behind one contract:
 | Grain | Provider | Status |
 | --- | --- | --- |
 | Daily history, by ZIP | NOAA CDO v2 (GHCND) | **live** |
+| Hourly history | Open-Meteo ERA5 archive | **live** |
 | Daily fallback | ACIS | planned |
-| Hourly history | Open-Meteo ERA5 archive | planned |
 | Real-time / forecast | NWS `api.weather.gov` | planned |
 
 **Design rationale and the full build plan: [ARCHITECTURE.md](./ARCHITECTURE.md).**
@@ -25,7 +25,7 @@ The original NOAA research spec this started from is [README.txt](./README.txt).
 
 ## Status
 
-Steps 1–2 of 6 are done and verified against live Neon and live NOAA:
+Steps 1–3 of 6 are done and verified against live Neon, live NOAA, and live Open-Meteo:
 
 - [x] TypeScript + Vercel functions, zod, vitest
 - [x] Per-consumer bearer auth (`lib/auth.ts`)
@@ -33,12 +33,12 @@ Steps 1–2 of 6 are done and verified against live Neon and live NOAA:
 - [x] `zcta_centroid` seeded — 33,144 rows, Census 2020 vintage
 - [x] `GET /api/v1/health`
 - [x] `GET /api/v1/precip/daily` — CDO, pagination, backoff, read-through cache
-- [ ] `GET /api/v1/precip/hourly` — Open-Meteo
+- [x] `GET /api/v1/precip/hourly` — Open-Meteo, UTC storage, DST-correct local rendering
 - [ ] `GET /api/v1/precip/forecast` — NWS; ACIS as CDO fallback
 - [ ] Vendored TS + Python clients; rainhedge migration
 - [ ] `GET /api/v1/usage` — quota telemetry
 
-fog-light can build against `daily` now. rainhedge needs `hourly`.
+Both consumers can build against the API now.
 
 ## Daily precipitation
 
@@ -61,6 +61,42 @@ Constraints worth knowing:
 - Days within 3 days of today are treated as unsettled and refetched on each request;
   older days are immutable and served from Neon forever.
 - `cache-control` is a year for a fully-settled range, an hour otherwise.
+
+## Hourly precipitation
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/v1/precip/hourly?zip=06107&start=2026-07-05&end=2026-07-07"
+curl -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/v1/precip/hourly?lat=41.7523&lon=-72.7581&start=2026-07-05&end=2026-07-07"
+```
+
+Accepts either a ZIP or explicit coordinates — rainhedge addresses sites by lat/lon, since
+a car wash is at a point rather than in a tabulation area.
+
+Each record carries **both** timestamps:
+
+```json
+{ "timestamp_local": "2026-07-05T01:00:00", "timestamp_utc": "2026-07-05T05:00:00Z",
+  "precip_inches": 0.004 }
+```
+
+`timestamp_local` is naive site-local — what you join POS receipts against. `timestamp_utc`
+is what makes the series unambiguous across a DST transition. Storage is UTC; local
+rendering happens on the way out through the site's IANA zone, so spring-forward and
+fall-back land correctly rather than being smeared by a single fixed offset.
+
+Consequences worth knowing:
+
+- **`expected_hours` is not `days × 24`.** The spring-forward day has 23 hours and the
+  fall-back day has 25. A three-day range spanning the March transition reports 71.
+- **Range grain is local days**, so the service fetches a padded UTC window and trims. That
+  padding is cached like anything else, so it costs at most one extra call per boundary.
+- `archive_max_end_date` is returned on every response. ERA5 lags real time by ~6 days;
+  read this rather than hard-coding a lag constant. Days past it still return data (the
+  archive backfills) but are marked unsettled and refetched.
+- The first request for a new location costs one extra upstream call to learn its
+  timezone, cached permanently thereafter. `meta.upstream_calls` includes it.
 
 ## Setup
 

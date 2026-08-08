@@ -280,7 +280,10 @@ constant. Existing tests over the fetcher become the migration's acceptance chec
    resolution with bounding-box fallback; read-through cache; `/precip/daily`. Verified
    against live NOAA: cold fetch 1 upstream call, repeat request 0, overlapping range fetches
    only the new days.
-3. **Hourly** — Open-Meteo provider, UTC storage with local-time conversion, `/precip/hourly`.
+3. ~~**Hourly**~~ — done. Open-Meteo provider, UTC storage with DST-correct local rendering,
+   `/precip/hourly`, addressable by ZIP *or* lat/lon. Migration 003 re-keyed `hourly_precip`
+   from `zip` to a `location_key` ('zip:06107' / 'geo:41.7523,-72.7581') because rainhedge
+   addresses sites by coordinate, which a CHAR(5) column cannot represent.
 4. **Forecast + fallback** — NWS provider and `/precip/forecast`; ACIS as CDO's fallback.
 5. **Clients** — vendor both files; migrate `rainhedge/weather.py` and verify against its
    existing tests; wire fog-light's dashboard seam.
@@ -300,5 +303,7 @@ Steps 1–2 alone make the service useful to fog-light. rainhedge needs step 3.
   search.
 - **ZCTA vintage** — Census 2020 gazetteer is current; ZCTAs shift between vintages, so the
   seeded vintage is recorded in `scripts/seed-zcta.ts` and should be surfaced in `/usage`.
-- **Timezone for ZIP-based hourly** — derived from the ZCTA centroid via Open-Meteo's
-  `timezone=auto`. Fine for single-timezone ZIPs, which is all of them in practice.
+- **Timezone for ZIP-based hourly** — resolved from the centroid via one Open-Meteo call per
+  location and cached in `location_timezone`. Storage stays UTC: asking Open-Meteo for local
+  times returns a single `utc_offset_seconds`, which cannot describe both sides of a DST
+  transition, so the conversion happens on output through the IANA zone instead.
