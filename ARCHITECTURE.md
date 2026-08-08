@@ -152,6 +152,25 @@ CREATE TABLE upstream_call_log (
 CREATE INDEX idx_calls_provider_day ON upstream_call_log (provider, called_on);
 ```
 
+Migration 002 adds two tables this design originally missed:
+
+```sql
+-- Absence of a daily_precip row can't distinguish "NOAA has no observation for
+-- this day" from "we never asked". Without this table every genuinely-empty day
+-- looks like a cache miss forever and burns quota on every request.
+CREATE TABLE daily_coverage (
+    zip CHAR(5), observation_date DATE, source VARCHAR(16),
+    has_data BOOLEAN, settled BOOLEAN, fetched_at TIMESTAMPTZ,
+    PRIMARY KEY (zip, observation_date)
+);
+
+-- The token bucket, in Postgres so 4 req/sec holds across concurrent function
+-- instances rather than per-instance.
+CREATE TABLE rate_limit_bucket (
+    provider VARCHAR(16) PRIMARY KEY, tokens NUMERIC(10,4), updated_at TIMESTAMPTZ
+);
+```
+
 Migrations are plain numbered `.sql` files run by `npm run migrate` — no ORM.
 
 Forecasts are deliberately absent. They're mutable, so caching them requires snapshot
@@ -257,8 +276,10 @@ constant. Existing tests over the fetcher become the migration's acceptance chec
 1. **Skeleton** — Vercel project, TS, zod, `@neondatabase/serverless`, vitest. `authenticate()`
    + `/health`. Migration runner and the §4.2 schema. Seed `zcta_centroid` from the Census
    gazetteer.
-2. **Daily** — CDO client with pagination, backoff, and token bucket; ZIP→station resolution
-   with bounding-box fallback; read-through cache; `/precip/daily`. This is the largest step.
+2. ~~**Daily**~~ — done. CDO client with pagination, backoff, and token bucket; ZIP→station
+   resolution with bounding-box fallback; read-through cache; `/precip/daily`. Verified
+   against live NOAA: cold fetch 1 upstream call, repeat request 0, overlapping range fetches
+   only the new days.
 3. **Hourly** — Open-Meteo provider, UTC storage with local-time conversion, `/precip/hourly`.
 4. **Forecast + fallback** — NWS provider and `/precip/forecast`; ACIS as CDO's fallback.
 5. **Clients** — vendor both files; migrate `rainhedge/weather.py` and verify against its
