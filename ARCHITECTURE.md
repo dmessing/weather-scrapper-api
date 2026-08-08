@@ -271,7 +271,13 @@ Steps 1–2 alone make the service useful to fog-light. rainhedge needs step 3.
 
 - **NWS `User-Agent`** needs a real contact address before the forecast endpoint will work in
   production.
+- **ZCTAs are not ZIPs** — confirmed during the step-1 seed: the Census 2020 gazetteer yields
+  33,144 ZCTAs, while USPS issues roughly 41,000 ZIP codes. PO-box-only and single-org ZIPs
+  (`00501` is the canonical example) have no ZCTA and so no centroid. This matters for the
+  §5.1 fallback path, which assumes a centroid exists whenever CDO returns zero stations.
+  Decide whether those ZIPs return a `422` with a clear reason or fall back to a nearest-ZCTA
+  search.
 - **ZCTA vintage** — Census 2020 gazetteer is current; ZCTAs shift between vintages, so the
-  seed file version should be recorded in the migration.
+  seeded vintage is recorded in `scripts/seed-zcta.ts` and should be surfaced in `/usage`.
 - **Timezone for ZIP-based hourly** — derived from the ZCTA centroid via Open-Meteo's
   `timezone=auto`. Fine for single-timezone ZIPs, which is all of them in practice.
