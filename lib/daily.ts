@@ -1,12 +1,14 @@
 import { db } from "./db.js";
 import { eachDay, settledCutoff } from "./dates.js";
+import { ApiError } from "./http.js";
+import { fetchDailyByBbox } from "./providers/acis.js";
 import {
   CDO_LAG_DAYS,
   fetchDailyByStations,
   fetchDailyByZip,
   type DailyObservation,
 } from "./providers/cdo.js";
-import { resolveStations } from "./stations.js";
+import { getCentroid, resolveStations } from "./stations.js";
 
 /**
  * Read-through daily precipitation.
@@ -120,6 +122,7 @@ async function persist(
   observations: DailyObservation[],
   fetchedDays: string[],
   cutoff: string,
+  source: string,
 ): Promise<void> {
   const sql = db();
 
@@ -127,7 +130,7 @@ async function persist(
     await sql.query(
       `INSERT INTO daily_precip
          (zip, observation_date, station_id, precip_inches, precip_mm, quality_flag, source, settled)
-       SELECT $1, d, s, i, m, q, 'cdo', d <= $7::date
+       SELECT $1, d, s, i, m, q, $8, d <= $7::date
          FROM UNNEST($2::date[], $3::varchar[], $4::numeric[], $5::numeric[], $6::varchar[])
               AS t(d, s, i, m, q)
        ON CONFLICT (zip, observation_date, station_id) DO UPDATE
@@ -144,6 +147,7 @@ async function persist(
         observations.map((o) => o.precip_mm),
         observations.map((o) => o.quality_flag),
         cutoff,
+        source,
       ],
     );
   }
@@ -155,13 +159,14 @@ async function persist(
   const daysWithData = new Set(observations.map((o) => o.observation_date));
   await sql.query(
     `INSERT INTO daily_coverage (zip, observation_date, source, has_data, settled)
-     SELECT $1, d, 'cdo', h, d <= $4::date
+     SELECT $1, d, $5, h, d <= $4::date
        FROM UNNEST($2::date[], $3::boolean[]) AS t(d, h)
      ON CONFLICT (zip, observation_date) DO UPDATE
        SET has_data   = EXCLUDED.has_data,
+           source     = EXCLUDED.source,
            settled    = EXCLUDED.settled,
            fetched_at = now()`,
-    [zip, fetchedDays, fetchedDays.map((day) => daysWithData.has(day)), cutoff],
+    [zip, fetchedDays, fetchedDays.map((day) => daysWithData.has(day)), cutoff, source],
   );
 }
 
@@ -189,14 +194,31 @@ export async function getDaily(
 
   let upstreamCalls = 0;
   let stations: { id: string; distance_mi: number }[] = [];
+  const sourcesUsed = new Set<string>();
 
   for (const window of ranges) {
-    let observations = await fetchDailyByZip(zip, window.start, window.end, client);
-    upstreamCalls += 1;
+    const windowDays = eachDay(window.start, window.end);
+    let observations: DailyObservation[] = [];
+    let source = "cdo";
+    let cdoFailed = false;
 
-    // A ZIP with no CDO station coverage returns nothing at all. Fall back to
-    // the centroid bounding-box search before concluding "no rain".
-    if (observations.length === 0) {
+    // Tier 1: the ZIP as CDO understands it. A CDO outage or an exhausted quota
+    // is a reason to try the fallback, not to fail the request.
+    try {
+      observations = await fetchDailyByZip(zip, window.start, window.end, client);
+      upstreamCalls += 1;
+    } catch (error) {
+      if (error instanceof ApiError && error.status >= 429) {
+        console.warn(`[daily] CDO unavailable (${error.message}); falling back to ACIS`);
+        cdoFailed = true;
+      } else {
+        throw error;
+      }
+    }
+
+    // Tier 2: a ZIP with no CDO station coverage returns nothing at all. Search
+    // the centroid's bounding box before concluding "no rain".
+    if (!cdoFailed && observations.length === 0) {
       const resolved = await resolveStations(zip, client);
       upstreamCalls += 1;
       stations = resolved.map((s) => ({ id: s.station_id, distance_mi: s.distance_mi }));
@@ -212,7 +234,25 @@ export async function getDaily(
       }
     }
 
-    await persist(zip, observations, eachDay(window.start, window.end), cutoff);
+    // Tier 3: ACIS blends the regional climate centres' networks and often has
+    // coverage where GHCND does not.
+    if (observations.length === 0) {
+      const centroid = await getCentroid(zip);
+      if (centroid) {
+        observations = await fetchDailyByBbox(
+          centroid,
+          window.start,
+          window.end,
+          windowDays,
+          client,
+        );
+        upstreamCalls += 1;
+        if (observations.length > 0) source = "acis";
+      }
+    }
+
+    sourcesUsed.add(source);
+    await persist(zip, observations, windowDays, cutoff, source);
   }
 
   const records = await loadRecords(zip, start, end);
@@ -228,7 +268,8 @@ export async function getDaily(
       pct: range.length === 0 ? 0 : Number((presentDays / range.length).toFixed(4)),
     },
     meta: {
-      source: "cdo",
+      // Which provider actually answered, not which one we tried first.
+      source: [...sourcesUsed].sort().join("+") || "cdo",
       cache: gaps.length === 0 ? "hit" : gaps.length === range.length ? "miss" : "partial",
       upstream_calls: upstreamCalls,
     },

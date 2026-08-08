@@ -17,15 +17,15 @@ Three providers sit behind one contract:
 | --- | --- | --- |
 | Daily history, by ZIP | NOAA CDO v2 (GHCND) | **live** |
 | Hourly history | Open-Meteo ERA5 archive | **live** |
-| Daily fallback | ACIS | planned |
-| Real-time / forecast | NWS `api.weather.gov` | planned |
+| Daily fallback | ACIS | **live** |
+| Real-time / forecast | NWS `api.weather.gov` | **live** |
 
 **Design rationale and the full build plan: [ARCHITECTURE.md](./ARCHITECTURE.md).**
 The original NOAA research spec this started from is [README.txt](./README.txt).
 
 ## Status
 
-Steps 1–3 of 6 are done and verified against live Neon, live NOAA, and live Open-Meteo:
+Steps 1–4 of 6 are done, each verified against the live upstream:
 
 - [x] TypeScript + Vercel functions, zod, vitest
 - [x] Per-consumer bearer auth (`lib/auth.ts`)
@@ -34,7 +34,8 @@ Steps 1–3 of 6 are done and verified against live Neon, live NOAA, and live Op
 - [x] `GET /api/v1/health`
 - [x] `GET /api/v1/precip/daily` — CDO, pagination, backoff, read-through cache
 - [x] `GET /api/v1/precip/hourly` — Open-Meteo, UTC storage, DST-correct local rendering
-- [ ] `GET /api/v1/precip/forecast` — NWS; ACIS as CDO fallback
+- [x] `GET /api/v1/precip/forecast` — NWS gridpoint QPF + probability
+- [x] ACIS fallback for daily, narrowed to the nearest stations
 - [ ] Vendored TS + Python clients; rainhedge migration
 - [ ] `GET /api/v1/usage` — quota telemetry
 
@@ -169,6 +170,37 @@ scripts/        migrate + seed, run locally via tsx
 data/           gitignored; the downloaded Census gazetteer lands here
 ```
 
+## Forecast
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/precip/forecast?zip=06107&days=7"
+```
+
+Returns a `daily` rollup and the raw `intervals` series. Not persisted: a forecast is
+mutable, and a stored one without its issue time is indistinguishable from a stale one.
+Served live under a one-hour CDN TTL, with `issued_at` on every response.
+
+- **Depth sums, probability maxes.** Two adjacent 40% windows are a 40% day, not 80%.
+- NWS publishes QPF over multi-hour windows. Those intervals pass through unmodified
+  rather than being spread evenly across their hours, which would invent detail the
+  forecast doesn't contain. An interval straddling local midnight is attributed to the day
+  it starts in.
+- Days are counted from **today at the site**, not at the server. The NWS grid series opens
+  before the current hour, so its first bucket is usually yesterday; those are dropped.
+- US and territories only — anything else returns `422 outside_nws_coverage`.
+
+## Daily fallback chain
+
+`/precip/daily` tries three tiers before reporting a gap:
+
+1. **CDO by ZIP** — `locationid=ZIP:#####`, the normal path.
+2. **CDO by station** — centroid bounding-box search when the ZIP has no CDO coverage.
+3. **ACIS by bounding box** — a different station network entirely.
+
+A CDO outage or an exhausted daily quota falls through to ACIS rather than failing the
+request. `meta.source` reports which provider actually answered (`cdo`, `acis`, or
+`cdo+acis` when a multi-window request used both).
+
 ## Known limitations
 
 - **ZCTAs are not ZIPs.** The Census gazetteer covers ~33.1k ZCTAs; USPS issues ~41k ZIP
@@ -178,8 +210,16 @@ data/           gitignored; the downloaded Census gazetteer lands here
 - **The bounding-box station fallback is written but not yet exercised in anger.** It only
   triggers for a ZIP that has a centroid *and* zero CDO station coverage; the ZIPs tested so
   far (`06107`, `99546`) both resolved directly through `locationid=ZIP:#####`.
-- **Station aggregation is an unweighted mean.** Every ZIP tested so far reports from a
-  single station, so the weighting question in ARCHITECTURE §3 is still theoretical.
+- **Station aggregation is an unweighted mean, and this now demonstrably matters.**
+  Measured live for West Hartford on 2026-07-05: CDO's single ZIP gauge read 0.41", while
+  the mean of the five nearest ACIS stations read 0.81". The nearest ACIS station matched
+  CDO exactly — the spread is real spatial variability in summer convective rain, not a
+  bug. For a contract that settles on a measurement, "mean of nearby gauges" and "the
+  gauge at the site" are different numbers, and the choice belongs to whoever writes the
+  contract. ARCHITECTURE §3's weighting question is no longer theoretical.
+- **Switching tiers can shift the number.** A range answered partly by CDO and partly by
+  ACIS mixes two station networks. `meta.source` and the per-row `station` field make this
+  visible, but nothing currently prevents it.
 - `zcta_centroid.state` is NULL — the national gazetteer file carries no state column.
   Nothing reads it today.
 - `splitStatements` in `lib/db.ts` is a pragmatic SQL splitter: it strips comments, but

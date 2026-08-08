@@ -284,7 +284,10 @@ constant. Existing tests over the fetcher become the migration's acceptance chec
    `/precip/hourly`, addressable by ZIP *or* lat/lon. Migration 003 re-keyed `hourly_precip`
    from `zip` to a `location_key` ('zip:06107' / 'geo:41.7523,-72.7581') because rainhedge
    addresses sites by coordinate, which a CHAR(5) column cannot represent.
-4. **Forecast + fallback** — NWS provider and `/precip/forecast`; ACIS as CDO's fallback.
+4. ~~**Forecast + fallback**~~ — done. NWS gridpoint QPF and probability at
+   `/precip/forecast`, unpersisted and served live; ACIS wired as CDO's third fallback tier,
+   narrowed to the nearest 5 stations within 15 miles so it answers the same question the
+   CDO path does.
 5. **Clients** — vendor both files; migrate `rainhedge/weather.py` and verify against its
    existing tests; wire fog-light's dashboard seam.
 6. **Telemetry** — `/usage`, the 85% quota warning, per-consumer attribution.
@@ -293,8 +296,11 @@ Steps 1–2 alone make the service useful to fog-light. rainhedge needs step 3.
 
 ## 9. Open questions
 
-- **NWS `User-Agent`** needs a real contact address before the forecast endpoint will work in
-  production.
+- **Station weighting is now a live question, not a theoretical one.** Measured for
+  West Hartford 2026-07-05: CDO's ZIP gauge 0.41" vs. 0.81" for the mean of the five
+  nearest ACIS stations, with the nearest ACIS station matching CDO exactly. Decide whether
+  the ZIP-level aggregate should be nearest-station, inverse-distance weighted, or the
+  current unweighted mean — the answer determines what a parametric trigger actually fires on.
 - **ZCTAs are not ZIPs** — confirmed during the step-1 seed: the Census 2020 gazetteer yields
   33,144 ZCTAs, while USPS issues roughly 41,000 ZIP codes. PO-box-only and single-org ZIPs
   (`00501` is the canonical example) have no ZCTA and so no centroid. This matters for the
