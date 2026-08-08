@@ -82,9 +82,24 @@ Two tiers, doing different jobs:
 
 - **Neon** is the durable cache and the thing that keeps us under quota. History
   accumulates; a multi-year backtest re-run costs zero upstream calls.
-- **Vercel CDN** absorbs repeat identical requests before a function even boots. A range
-  of fully-settled days is immutable → long `s-maxage`. A range touching recent days or a
-  forecast → short `s-maxage` with `stale-while-revalidate`.
+- **Vercel CDN** was intended to absorb repeat identical requests before a function even
+  boots, with a long `s-maxage` on immutable settled ranges and a short one elsewhere.
+
+  **Measured in production, this tier does not engage.** Every response returns
+  `x-vercel-cache: BYPASS`, on repeats too. Vercel's Edge Network refuses to cache responses
+  to requests carrying an `Authorization` header — correctly, since a shared cache must not
+  serve one caller's authenticated response to another. Confirmed by comparison: identical
+  requests are `BYPASS` with the header and `MISS` without it.
+
+  The design therefore runs on one tier, and the `s-maxage` headers are currently
+  decorative. This is accepted rather than worked around. The workarounds all trade away the
+  security property — moving the token to a custom header would let the CDN cache, but
+  Vercel would not `Vary` on that header, so an unauthenticated request could be served a
+  cached response. Neon still prevents quota burn, which is the reason the service exists,
+  and a Postgres round-trip on a warm instance costs tens of milliseconds.
+
+  Revisit only if request volume makes the per-request function boot expensive; the fix
+  would be a separately-routed public read path, not weaker auth.
 
 Connection uses `@neondatabase/serverless` (HTTP driver — no pooler needed, no connection
 exhaustion from concurrent function instances). `NEON_POSTGRESS_CONN_STR` is already in

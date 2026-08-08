@@ -99,6 +99,26 @@ Consequences worth knowing:
 - The first request for a new location costs one extra upstream call to learn its
   timezone, cached permanently thereafter. `meta.upstream_calls` includes it.
 
+## Deployment
+
+Production: **https://vercel-fetch-noaa.vercel.app**
+
+Use that bare domain. The deployment-specific URLs
+(`vercel-fetch-noaa-*-dmessings-projects.vercel.app`) sit behind Vercel SSO and answer with
+an HTML redirect to `vercel.com/sso-api` rather than JSON — a consumer pointed at one of
+those gets a 302, not data.
+
+Consumer configuration:
+
+| Consumer | Where |
+| --- | --- |
+| fog-light | `.env.local`, pushed to Vercel with `./vercelEnvPush.sh` |
+| rainhedge | `render.yaml` for the URL; `PRECIP_API_TOKEN` set in the Render dashboard (`sync: false`) |
+
+Note the CDN cache does not apply to these endpoints — see ARCHITECTURE.md §4.1. Responses
+carry `s-maxage`, but Vercel bypasses its cache for requests with an `Authorization` header,
+so every request reaches a function and Neon. Quota protection is unaffected.
+
 ## Setup
 
 Requires Node 22+.
