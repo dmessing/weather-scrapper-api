@@ -7,3 +7,6 @@ data/
 .DS_Store
 .vercel
 .env*
+
+# Playwright MCP run artifacts
+.playwright-mcp/
