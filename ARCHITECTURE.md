@@ -293,9 +293,13 @@ constant. Existing tests over the fetcher become the migration's acceptance chec
    `src/lib/precip-forecast.ts`. Note the existing rainhedge suite only covered
    `synthesize_precipitation`, so `tests/test_weather.py` was added to cover the fetch path
    the migration actually changed.
-6. **Telemetry** — `/usage`, the 85% quota warning, per-consumer attribution.
+6. ~~**Telemetry**~~ — done. `/usage` with per-consumer attribution, the 85% warning, and
+   cache-effectiveness counters. Migration 004 pins the quota day to UTC rather than
+   `CURRENT_DATE`, which resolves against the session's `TimeZone` and would have filed
+   calls under the wrong day if that ever changed.
 
-Steps 1–2 alone make the service useful to fog-light. rainhedge needs step 3.
+All six steps are complete. What remains is deployment: this repo has no commits and is not
+linked to a Vercel project, so both consumers currently point at nothing.
 
 ## 9. Open questions
 

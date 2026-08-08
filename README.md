@@ -25,7 +25,7 @@ The original NOAA research spec this started from is [README.txt](./README.txt).
 
 ## Status
 
-Steps 1–5 of 6 are done, each verified against the live upstream:
+**All six build steps are done**, each verified against the live upstream:
 
 - [x] TypeScript + Vercel functions, zod, vitest
 - [x] Per-consumer bearer auth (`lib/auth.ts`)
@@ -37,7 +37,7 @@ Steps 1–5 of 6 are done, each verified against the live upstream:
 - [x] `GET /api/v1/precip/forecast` — NWS gridpoint QPF + probability
 - [x] ACIS fallback for daily, narrowed to the nearest stations
 - [x] Vendored TS + Python clients; rainhedge migrated off its own Open-Meteo fetcher
-- [ ] `GET /api/v1/usage` — quota telemetry
+- [x] `GET /api/v1/usage` — quota telemetry with per-consumer attribution
 
 Both consumers can build against the API now.
 
@@ -238,6 +238,40 @@ Two deliberate deviations from the original plan:
 `dashboard-data.ts` already defines, so the card can switch over without markup changes. It
 returns `null` when the service is unconfigured or unreachable — a precipitation outage
 should degrade the forecast card, not the whole operator dashboard.
+
+## Usage & quota
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/usage"
+```
+
+Reports what the shared NOAA budget went on today, who spent it, and how much work the
+cache absorbed:
+
+```jsonc
+{
+  "quota_day_utc": "2026-08-08",
+  "providers": [
+    { "provider": "cdo", "used": 5, "errors": 0, "rejected": 0,
+      "quota": 10000, "remaining": 9995, "pct_used": 0.0005,
+      "warn": false, "exhausted": false }
+  ],
+  "by_client": [{ "client": "rainhedge", "provider": "open-meteo", "calls": 16 }],
+  "cache": { "daily_observations": 13, "hourly_observations": 672, "locations_known": 5 },
+  "warnings": []
+}
+```
+
+- **`errors` vs `rejected`.** `errors` is 5xx and 429 — the provider failing us, worth
+  alerting on. `rejected` is other 4xx: requests that could never have succeeded, like a
+  point outside NWS coverage. Conflating them makes the warning permanently noisy.
+- **The quota day is UTC**, matching NOAA's reset, and is pinned explicitly rather than
+  relying on the session's `TimeZone` (migration 004).
+- Providers with no published ceiling report `used` but a null percentage — a made-up
+  denominator would be worse than none.
+- `warn` trips at 85% of the ceiling, `exhausted` at 100%. Past exhaustion, daily requests
+  fall through to ACIS rather than failing.
+- Never cached: a stale quota reading is worse than no reading.
 
 ## Known limitations
 

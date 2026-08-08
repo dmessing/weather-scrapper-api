@@ -84,8 +84,10 @@ export interface QuotaStatus {
 export async function quotaStatus(provider: string): Promise<QuotaStatus> {
   const sql = db();
   const rows = (await sql.query(
+    // Explicit UTC rather than CURRENT_DATE: the quota day must not depend on
+    // the session's TimeZone setting. See migration 004.
     `SELECT count(*)::int AS used FROM upstream_call_log
-      WHERE provider = $1 AND called_on = CURRENT_DATE`,
+      WHERE provider = $1 AND called_on = (now() AT TIME ZONE 'UTC')::date`,
     [provider],
   )) as { used: number }[];
 
