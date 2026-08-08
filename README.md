@@ -15,7 +15,8 @@ Three providers sit behind one contract:
 
 | Grain | Provider | Status |
 | --- | --- | --- |
-| Daily history, by ZIP | NOAA CDO v2 (GHCND), ACIS fallback | planned |
+| Daily history, by ZIP | NOAA CDO v2 (GHCND) | **live** |
+| Daily fallback | ACIS | planned |
 | Hourly history | Open-Meteo ERA5 archive | planned |
 | Real-time / forecast | NWS `api.weather.gov` | planned |
 
@@ -24,20 +25,42 @@ The original NOAA research spec this started from is [README.txt](./README.txt).
 
 ## Status
 
-Step 1 of 6 (skeleton) is done and verified against live Neon:
+Steps 1–2 of 6 are done and verified against live Neon and live NOAA:
 
 - [x] TypeScript + Vercel functions, zod, vitest
 - [x] Per-consumer bearer auth (`lib/auth.ts`)
 - [x] Neon HTTP driver, migration runner, full schema applied
 - [x] `zcta_centroid` seeded — 33,144 rows, Census 2020 vintage
 - [x] `GET /api/v1/health`
-- [ ] `GET /api/v1/precip/daily` — CDO + read-through cache
+- [x] `GET /api/v1/precip/daily` — CDO, pagination, backoff, read-through cache
 - [ ] `GET /api/v1/precip/hourly` — Open-Meteo
 - [ ] `GET /api/v1/precip/forecast` — NWS; ACIS as CDO fallback
 - [ ] Vendored TS + Python clients; rainhedge migration
 - [ ] `GET /api/v1/usage` — quota telemetry
 
-Steps through `daily` make the service useful to fog-light. rainhedge needs `hourly`.
+fog-light can build against `daily` now. rainhedge needs `hourly`.
+
+## Daily precipitation
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/v1/precip/daily?zip=06107&start=2026-07-01&end=2026-07-07"
+```
+
+Returns per-station `records`, a mean-across-stations `aggregate`, and a `coverage` block.
+**Missing days are absent, never zero-filled** — a backtest has to be able to tell a hole
+from a dry day. Observations that failed NOAA's own QC flag are dropped for the same
+reason: a wrong number that looks real is worse than a gap.
+
+`meta.cache` reports `miss` / `partial` / `hit`, and `meta.upstream_calls` how many NOAA
+requests the response actually cost. A repeat of a settled range costs zero.
+
+Constraints worth knowing:
+
+- **366 days max per request** — CDO rejects longer spans. Page client-side.
+- Days within 3 days of today are treated as unsettled and refetched on each request;
+  older days are immutable and served from Neon forever.
+- `cache-control` is a year for a fully-settled range, an hour otherwise.
 
 ## Setup
 
@@ -113,9 +136,14 @@ data/           gitignored; the downloaded Census gazetteer lands here
 ## Known limitations
 
 - **ZCTAs are not ZIPs.** The Census gazetteer covers ~33.1k ZCTAs; USPS issues ~41k ZIP
-  codes. PO-box-only and single-org ZIPs (e.g. `00501`) have no ZCTA and therefore no
-  centroid, so any ZIP→lat/lon path will miss them. CDO's `ZIP:#####` lookup may still
-  work for those; the centroid fallback won't.
+  codes. PO-box-only and single-org ZIPs have no ZCTA and therefore no centroid, so the
+  fallback path can't run for them. Confirmed live: `00501` returns `422 no_centroid_for_zip`
+  rather than an empty result that would read as "no rain".
+- **The bounding-box station fallback is written but not yet exercised in anger.** It only
+  triggers for a ZIP that has a centroid *and* zero CDO station coverage; the ZIPs tested so
+  far (`06107`, `99546`) both resolved directly through `locationid=ZIP:#####`.
+- **Station aggregation is an unweighted mean.** Every ZIP tested so far reports from a
+  single station, so the weighting question in ARCHITECTURE §3 is still theoretical.
 - `zcta_centroid.state` is NULL — the national gazetteer file carries no state column.
   Nothing reads it today.
 - `splitStatements` in `lib/db.ts` is a pragmatic SQL splitter: it strips comments, but
