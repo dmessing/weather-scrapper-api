@@ -25,7 +25,7 @@ The original NOAA research spec this started from is [README.txt](./README.txt).
 
 ## Status
 
-Steps 1–4 of 6 are done, each verified against the live upstream:
+Steps 1–5 of 6 are done, each verified against the live upstream:
 
 - [x] TypeScript + Vercel functions, zod, vitest
 - [x] Per-consumer bearer auth (`lib/auth.ts`)
@@ -36,7 +36,7 @@ Steps 1–4 of 6 are done, each verified against the live upstream:
 - [x] `GET /api/v1/precip/hourly` — Open-Meteo, UTC storage, DST-correct local rendering
 - [x] `GET /api/v1/precip/forecast` — NWS gridpoint QPF + probability
 - [x] ACIS fallback for daily, narrowed to the nearest stations
-- [ ] Vendored TS + Python clients; rainhedge migration
+- [x] Vendored TS + Python clients; rainhedge migrated off its own Open-Meteo fetcher
 - [ ] `GET /api/v1/usage` — quota telemetry
 
 Both consumers can build against the API now.
@@ -201,6 +201,44 @@ A CDO outage or an exhausted daily quota falls through to ACIS rather than faili
 request. `meta.source` reports which provider actually answered (`cdo`, `acis`, or
 `cdo+acis` when a multi-window request used both).
 
+## Clients
+
+Both clients live in `clients/` and are **vendored by copying** — no registry, no publish
+step. `clients/` is the source of truth; if you edit a vendored copy, edit the original too.
+
+| Client | Source | Vendored to |
+| --- | --- | --- |
+| TypeScript | `clients/ts/precip-client.ts` | `fog-light/src/lib/precip-client.ts` |
+| Python | `clients/py/precip_client.py` | `weather-backtest/src/rainhedge/precip_client.py` |
+
+Both read `PRECIP_API_URL` and `PRECIP_API_TOKEN` from the environment and raise a typed
+error (`PrecipApiError`) carrying the service's `code`, so callers can tell
+`no_centroid_for_zip` from an outage.
+
+### rainhedge
+
+`weather.py` now delegates to the service. Its public contract is unchanged —
+`fetch_historical_precipitation(lat, lon, start, end)` still returns naive site-local
+`timestamp` plus `precipitation` in inches — so `features.py`, `baseline.py` and
+`elasticity.py` were not touched. The local `.cache/weather` disk cache and the direct
+Open-Meteo call are gone.
+
+Two deliberate deviations from the original plan:
+
+- `use_cache` is kept as a no-op parameter rather than removed, so existing call sites keep
+  working. Caching is server-side now.
+- `archive_max_end_date()` stays a **local** pure function. app.py calls it during Streamlit
+  layout, and making that a network round-trip would have put an HTTP call in the widget
+  path. The service's authoritative value is on every hourly response, and
+  `service_archive_max_end_date(lat, lon)` fetches it when the exact cutoff matters.
+
+### fog-light
+
+`src/lib/precip-forecast.ts` maps a service forecast into the `ForecastDay` shape
+`dashboard-data.ts` already defines, so the card can switch over without markup changes. It
+returns `null` when the service is unconfigured or unreachable — a precipitation outage
+should degrade the forecast card, not the whole operator dashboard.
+
 ## Known limitations
 
 - **ZCTAs are not ZIPs.** The Census gazetteer covers ~33.1k ZCTAs; USPS issues ~41k ZIP
@@ -217,6 +255,10 @@ request. `meta.source` reports which provider actually answered (`cdo`, `acis`, 
   bug. For a contract that settles on a measurement, "mean of nearby gauges" and "the
   gauge at the site" are different numbers, and the choice belongs to whoever writes the
   contract. ARCHITECTURE §3's weighting question is no longer theoretical.
+- **fog-light's forecast card is laid out for 14 days; NWS publishes 7.** The card renders
+  a `grid-cols-14` strip from mock data. Against live data it will fill half its width until
+  that is reconciled — either narrow the card, or source days 8–14 from somewhere that
+  actually forecasts that far out. The seam is built; the card is not switched over.
 - **Switching tiers can shift the number.** A range answered partly by CDO and partly by
   ACIS mixes two station networks. `meta.source` and the per-row `station` field make this
   visible, but nothing currently prevents it.

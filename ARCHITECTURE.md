@@ -288,8 +288,11 @@ constant. Existing tests over the fetcher become the migration's acceptance chec
    `/precip/forecast`, unpersisted and served live; ACIS wired as CDO's third fallback tier,
    narrowed to the nearest 5 stations within 15 miles so it answers the same question the
    CDO path does.
-5. **Clients** — vendor both files; migrate `rainhedge/weather.py` and verify against its
-   existing tests; wire fog-light's dashboard seam.
+5. ~~**Clients**~~ — done. Both clients vendored; `rainhedge/weather.py` migrated onto the
+   service with its public contract intact; fog-light's forecast seam built at
+   `src/lib/precip-forecast.ts`. Note the existing rainhedge suite only covered
+   `synthesize_precipitation`, so `tests/test_weather.py` was added to cover the fetch path
+   the migration actually changed.
 6. **Telemetry** — `/usage`, the 85% quota warning, per-consumer attribution.
 
 Steps 1–2 alone make the service useful to fog-light. rainhedge needs step 3.
