@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import handler from "./health.js";
+import handler from "../api/v1/health.js";
 
 // No CLIENT_TOKENS in the test env, so no bearer token can authenticate here.
 // That is exactly the state the shallow check must survive and the deep check
